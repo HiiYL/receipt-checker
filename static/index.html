@@ -80,7 +80,9 @@
   </div>
 </main>
 
-<script>
+<script type="module">
+import { checkPayload, localToday } from "./invoice.js";
+
 const $ = s => document.querySelector(s);
 const canvas = document.createElement("canvas");
 const ctx = canvas.getContext("2d", { willReadFrequently: true });
@@ -91,7 +93,7 @@ document.querySelectorAll(".tabs button").forEach(b => b.onclick = () => {
   ["scan", "photo", "manual"].forEach(t => $("#tab-" + t).classList.toggle("hide", t !== b.dataset.tab));
   if (b.dataset.tab !== "scan") stopCam();
 });
-$("#date").valueAsDate = new Date();
+$("#date").value = localToday();
 
 // A left QR starts with 2 letters + 8 digits + 7-digit ROC date; a barcode is 19 chars.
 const looksUseful = t => /^[A-Z]{2}\d{15}/.test(t) || /^\d{5}[A-Z]{2}\d{12}$/.test(t);
@@ -162,13 +164,20 @@ $("#photo").onchange = async e => {
 
 $("#checkManual").onclick = () => check({ number: $("#num").value, date: $("#date").value });
 
+// Winning numbers come from winning.json, refreshed daily by a GitHub Action.
+let winningPromise = null;
+function loadWinning() {
+  winningPromise ??= fetch("winning.json", { cache: "no-cache" })
+    .then(r => { if (!r.ok) throw new Error("Couldn't load winning numbers"); return r.json(); })
+    .then(d => d.terms || [])
+    .catch(e => { winningPromise = null; throw e; });
+  return winningPromise;
+}
+
 async function check(payload) {
   show({ status: "loading", message: "Checking…" });
   try {
-    const r = await fetch("/api/check", { method: "POST", headers: { "Content-Type": "application/json" },
-                                          body: JSON.stringify(payload) });
-    const data = await r.json();
-    if (!r.ok) throw new Error(data.error || r.statusText);
+    const data = checkPayload(payload, await loadWinning(), localToday());
     show(data); addHistory(data);
   } catch (e) { show({ status: "error", message: e.message }); }
 }
@@ -228,14 +237,16 @@ $("#clear").onclick = () => { if (load().length) { save([]); renderHistory(); } 
 
 // Re-check receipts whose draw has happened since they were saved.
 async function recheckPending() {
-  const today = new Date().toISOString().slice(0, 10);
-  for (const e of load().filter(e => e.status === "not_drawn" && e.draw_date <= today)) {
-    try {
-      const r = await fetch("/api/check", { method: "POST", headers: { "Content-Type": "application/json" },
-                                            body: JSON.stringify({ number: e.number, date: e.date }) });
-      if (r.ok) addHistory(await r.json());
-    } catch (err) {}
-  }
+  const today = localToday();
+  const pending = load().filter(e => e.status === "not_drawn" && e.draw_date <= today);
+  if (!pending.length) return;
+  try {
+    const winning = await loadWinning();
+    for (const e of pending) {
+      const d = checkPayload({ number: e.number, date: e.date }, winning, today);
+      if (d.status !== "not_drawn") addHistory(d);
+    }
+  } catch (err) {}
 }
 renderHistory(); recheckPending();
 </script>

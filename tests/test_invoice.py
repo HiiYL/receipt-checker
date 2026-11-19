@@ -104,6 +104,24 @@ class Sources(unittest.TestCase):
         self.assertEqual((wn.first, wn.additional_sixth), (WN.first, ["135"]))
 
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+import update_winning  # noqa: E402
+
+
+class Updater(unittest.TestCase):
+    def test_merge_keeps_old_terms_and_prefers_fresh(self):
+        old = [{"term": "11406", "special": "1"}, {"term": "11408", "special": "old"}]
+        fresh = [{"term": "11410", "special": "3"}, {"term": "11408", "special": "new"}]
+        out = update_winning.merge(old, fresh)
+        self.assertEqual([d["term"] for d in out], ["11410", "11408", "11406"])
+        self.assertEqual(out[1]["special"], "new")
+
+    def test_merge_caps_length(self):
+        fresh = [{"term": f"114{m:02d}"} for m in (2, 4, 6, 8, 10, 12)]
+        out = update_winning.merge([{"term": "11312"}], fresh, keep=6)
+        self.assertEqual(out[-1]["term"], "11402")
+
+
 class EndToEnd(unittest.TestCase):
     def setUp(self):
         sources._cache["11410"] = (1e18, WN)

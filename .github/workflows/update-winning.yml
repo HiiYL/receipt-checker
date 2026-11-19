@@ -1,0 +1,35 @@
+name: Update winning numbers
+
+on:
+  schedule:
+    - cron: "0 14 * * *"   # daily, 22:00 Taiwan time (draws are on the 25th)
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-winning
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Fetch Ministry of Finance feed
+        run: python3 scripts/update_winning.py
+      - name: Commit if changed
+        run: |
+          if git diff --quiet -- static/winning.json; then
+            echo "winning.json unchanged"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add static/winning.json
+          git commit -m "Update winning numbers"
+          git push
