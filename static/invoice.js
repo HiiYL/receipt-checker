@@ -197,3 +197,15 @@ export function checkPayload(payload, winning, today) {
            message: `Winner! ${result.prize} NT$${result.amount.toLocaleString("en-US")}. ` +
                     `Claim ${schedule.claim_start} to ${schedule.claim_end}.` };
 }
+
+// Of all the codes found in one image, pick the one to check: the left QR
+// (full details) first, else the 1D barcode. The right QR ("**...") and
+// unrelated codes are ignored. Returns the raw text, or null.
+export function pickInvoiceCode(texts) {
+  for (const fn of [parseLeftQr, parseBarcode]) {
+    for (const t of texts) {
+      try { fn(t); return t.trim(); } catch (e) {}
+    }
+  }
+  return null;
+}

@@ -116,3 +116,11 @@ test("committed winning.json has the expected shape", () => {
     assert.ok(t.first.length >= 3 && t.first.every(f => /^\d{8}$/.test(f)));
   }
 });
+
+test("pickInvoiceCode prefers the left QR, then the barcode", () => {
+  const right = "**:咖啡:1:60", bar = "11410AB111222331234", left = leftQr();
+  assert.equal(iv.pickInvoiceCode([right, bar, left]), left);
+  assert.equal(iv.pickInvoiceCode([right, "https://example.com", bar]), bar);
+  assert.equal(iv.pickInvoiceCode([right, "hello"]), null);
+  assert.equal(iv.pickInvoiceCode([]), null);
+});

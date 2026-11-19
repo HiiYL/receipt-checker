@@ -41,6 +41,10 @@ python3 -m http.server -d static 8000     # open http://localhost:8000
    - *Scan camera / Photo*: decodes the **left QR code** of an e-invoice proof
      (電子發票證明聯): invoice number, date, random code, sales and total amounts,
      buyer and seller tax IDs, and items. The 1D barcode also works.
+     Decoding uses [ZXing](https://github.com/Sec-ant/zxing-wasm) (WebAssembly), which
+     finds every code in the photo, including rotated, small or slightly blurry ones.
+     If nothing usable is found (after 20 seconds of camera scanning, or in a photo),
+     the app says why and switches to *Type in*.
    - *Type in*: invoice number and date from a traditional paper invoice.
 2. **Work out the period** (期別, two months, e.g. 115年07-08月 = `11508`), its draw
    date (25th of the following odd month) and claim window (6th of the next month,

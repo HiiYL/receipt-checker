@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Receipt Checker 發票對獎</title>
-<script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/zxing-wasm@2.2.4/dist/iife/reader/index.js"></script>
 <style>
   :root { --bg:#f6f7f9; --card:#fff; --fg:#1b1f24; --mute:#667085; --line:#e4e7ec;
           --accent:#0b6bcb; --win:#0f8a4b; --warn:#b54708; --lose:#475467; }
@@ -81,85 +81,118 @@
 </main>
 
 <script type="module">
-import { checkPayload, localToday } from "./invoice.js";
+import { checkPayload, localToday, pickInvoiceCode } from "./invoice.js";
 
 const $ = s => document.querySelector(s);
-const canvas = document.createElement("canvas");
-const ctx = canvas.getContext("2d", { willReadFrequently: true });
-let stream = null, lastCode = "", scanning = false;
+let stream = null, lastCode = "", scanning = false, scanStarted = 0;
 
-document.querySelectorAll(".tabs button").forEach(b => b.onclick = () => {
-  document.querySelectorAll(".tabs button").forEach(x => x.classList.toggle("on", x === b));
-  ["scan", "photo", "manual"].forEach(t => $("#tab-" + t).classList.toggle("hide", t !== b.dataset.tab));
-  if (b.dataset.tab !== "scan") stopCam();
-});
+function showTab(name) {
+  document.querySelectorAll(".tabs button").forEach(x => x.classList.toggle("on", x.dataset.tab === name));
+  ["scan", "photo", "manual"].forEach(t => $("#tab-" + t).classList.toggle("hide", t !== name));
+  if (name !== "scan") stopCam();
+}
+document.querySelectorAll(".tabs button").forEach(b => b.onclick = () => showTab(b.dataset.tab));
 $("#date").value = localToday();
 
-// A left QR starts with 2 letters + 8 digits + 7-digit ROC date; a barcode is 19 chars.
-const looksUseful = t => /^[A-Z]{2}\d{15}/.test(t) || /^\d{5}[A-Z]{2}\d{12}$/.test(t);
+// ---- Decoding: ZXing (WebAssembly), pinned to the same version as the script ----
+const ZXING_WASM = "https://cdn.jsdelivr.net/npm/zxing-wasm@2.2.4/dist/reader/zxing_reader.wasm";
+const READER = { tryHarder: true, formats: ["QRCode", "Code39", "Code128"], maxNumberOfSymbols: 5 };
+window.ZXingWASM?.prepareZXingModule({
+  overrides: { locateFile: (path, prefix) => path.endsWith(".wasm") ? ZXING_WASM : prefix + path },
+});
 
-const detector = "BarcodeDetector" in window
-  ? new BarcodeDetector({ formats: ["qr_code", "code_39", "code_128"] }) : null;
-
-async function decodeRegion(src, x, y, w, h) {
-  canvas.width = w; canvas.height = h;
-  ctx.drawImage(src, x, y, w, h, 0, 0, w, h);
-  if (detector) {
-    try {
-      const codes = await detector.detect(canvas);
-      const hit = codes.map(c => c.rawValue).find(looksUseful);
-      if (hit) return hit;
-    } catch (e) {}
-  }
-  const img = ctx.getImageData(0, 0, w, h);
-  const r = window.jsQR && jsQR(img.data, w, h, { inversionAttempts: "attemptBoth" });
-  return r && looksUseful(r.data) ? r.data : null;
+// Returns the text of the left QR (or the barcode) found anywhere in the image,
+// "right-only" if only the right-hand QR was readable, or null.
+async function decode(imageData) {
+  if (!window.ZXingWASM) throw new Error("The code reader didn't load. Check your connection and reload.");
+  const texts = (await ZXingWASM.readBarcodes(imageData, READER)).filter(r => r.isValid).map(r => r.text);
+  return pickInvoiceCode(texts) ?? (texts.some(t => t.startsWith("**")) ? "right-only" : null);
 }
 
-// E-invoices have two QR codes side by side; jsQR finds only one per image,
-// so also try the left half and the left two-thirds.
-async function decodeImage(src, w, h) {
-  for (const [fx, fw] of [[0, 1], [0, 0.5], [0, 0.66], [0.1, 0.5]]) {
-    const code = await decodeRegion(src, Math.floor(w * fx), 0, Math.floor(w * fw), h);
-    if (code) return code;
-  }
-  return null;
+function frame(src, w, h, maxSide) {
+  const scale = Math.min(1, maxSide / Math.max(w, h));
+  const c = document.createElement("canvas");
+  c.width = Math.round(w * scale); c.height = Math.round(h * scale);
+  const g = c.getContext("2d", { willReadFrequently: true });
+  g.drawImage(src, 0, 0, c.width, c.height);
+  return g.getImageData(0, 0, c.width, c.height);
 }
 
+// Nothing usable found: explain, and move to Type in so nobody is stuck.
+function noCode(found, where) {
+  const why = found === "right-only"
+    ? "Only the right-hand QR code was readable; it doesn't contain the invoice number."
+    : `No invoice QR code or barcode found ${where}.`;
+  show({ status: "error", message: why + " Type in the invoice number (e.g. AB-12345678) and date printed at the top of the receipt instead." });
+  showTab("manual");
+  $("#date").value = localToday();
+  $("#num").focus();
+}
+
+const SCAN_GIVE_UP_MS = 20000;
 $("#startCam").onclick = async () => {
   if (stream) return stopCam();
   try {
-    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: "environment", width: { ideal: 1920 }, height: { ideal: 1080 } } });
   } catch (e) {
     return show({ status: "error", message: "Camera unavailable (" + e.message + "). Use Photo or Type in." });
   }
   const v = $("#video"); v.srcObject = stream; v.style.display = "block"; await v.play();
-  $("#startCam").textContent = "Stop camera"; scanning = true; tick();
+  $("#startCam").textContent = "Stop camera"; scanning = true; scanStarted = Date.now(); lastCode = ""; tick();
 };
 function stopCam() {
   scanning = false;
   if (stream) stream.getTracks().forEach(t => t.stop());
   stream = null; $("#video").style.display = "none"; $("#startCam").textContent = "Start camera";
 }
+let lastFound = null;
 async function tick() {
   if (!scanning) return;
   const v = $("#video");
   if (v.readyState >= 2) {
-    const code = await decodeImage(v, v.videoWidth, v.videoHeight);
-    if (code && code !== lastCode) { lastCode = code; navigator.vibrate?.(80); check({ code }); }
+    let found = null;
+    try { found = await decode(frame(v, v.videoWidth, v.videoHeight, 1920)); }
+    catch (e) { stopCam(); return show({ status: "error", message: e.message }); }
+    if (!scanning) return;
+    if (found && found !== "right-only") {
+      if (found !== lastCode) { lastCode = found; navigator.vibrate?.(80); check({ code: found }); }
+      scanStarted = Date.now();
+    } else {
+      lastFound = found || lastFound;
+      if (!lastCode && Date.now() - scanStarted > SCAN_GIVE_UP_MS) return noCode(lastFound, "in 20 seconds of scanning");
+    }
   }
-  setTimeout(tick, 250);
+  setTimeout(tick, 200);
+}
+
+// createImageBitmap applies the photo's EXIF rotation and is quicker than <img>.
+async function openImage(file) {
+  try { return await createImageBitmap(file); } catch (e) {}
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => { URL.revokeObjectURL(img.src); resolve(img); };
+    img.onerror = () => reject(new Error("Couldn't open that image. Try a JPEG or PNG photo."));
+    img.src = URL.createObjectURL(file);
+  });
 }
 
 $("#photo").onchange = async e => {
   const file = e.target.files[0]; if (!file) return;
-  const img = new Image(); img.src = URL.createObjectURL(file); await img.decode();
-  const scale = Math.min(1, 1600 / Math.max(img.width, img.height));
-  const w = Math.round(img.width * scale), h = Math.round(img.height * scale);
-  const off = document.createElement("canvas"); off.width = w; off.height = h;
-  off.getContext("2d").drawImage(img, 0, 0, w, h);
-  const code = await decodeImage(off, w, h);
-  code ? check({ code }) : show({ status: "error", message: "No invoice QR code found. Try a closer, sharper photo, or Type in." });
+  e.target.value = "";   // allow picking the same file again
+  show({ status: "loading", message: "Reading the photo…" });
+  try {
+    const img = await openImage(file);
+    const w = img.naturalWidth || img.width, h = img.naturalHeight || img.height;
+    let found = await decode(frame(img, w, h, 2400));
+    if ((!found || found === "right-only") && Math.max(w, h) > 2400) {
+      found = (await decode(frame(img, w, h, 4096))) || found;   // retry at (near) full size
+    }
+    img.close?.();
+    found && found !== "right-only" ? check({ code: found }) : noCode(found, "in the photo");
+  } catch (err) {
+    show({ status: "error", message: err.message });
+  }
 };
 
 $("#checkManual").onclick = () => check({ number: $("#num").value, date: $("#date").value });
