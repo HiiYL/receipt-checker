@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Receipt Checker 發票對獎</title>
+<script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --fg:#1b1f24; --mute:#667085; --line:#e4e7ec;
+          --accent:#0b6bcb; --win:#0f8a4b; --warn:#b54708; --lose:#475467; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#0f1115; --card:#181b21; --fg:#e8eaed;
+          --mute:#98a2b3; --line:#2a2f37; --accent:#5aa8ff; --win:#3fd08a; --warn:#f5a25b; --lose:#a0a8b5; } }
+  * { box-sizing: border-box; }
+  body { margin:0; font:16px/1.5 system-ui, -apple-system, "Noto Sans TC", sans-serif;
+         background:var(--bg); color:var(--fg); }
+  main { max-width:560px; margin:0 auto; padding:20px 16px 48px; }
+  h1 { font-size:22px; margin:0 0 4px; } p.sub { color:var(--mute); margin:0 0 20px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:16px; margin-bottom:14px; }
+  .tabs { display:flex; gap:6px; margin-bottom:12px; }
+  .tabs button { flex:1; padding:9px; border:1px solid var(--line); background:transparent; color:var(--fg);
+                 border-radius:10px; font:inherit; cursor:pointer; }
+  .tabs button.on { background:var(--accent); color:#fff; border-color:var(--accent); }
+  video { width:100%; border-radius:10px; background:#000; display:none; }
+  label { display:block; font-size:14px; color:var(--mute); margin:8px 0 4px; }
+  input { width:100%; padding:10px; border:1px solid var(--line); border-radius:10px; font:inherit;
+          background:var(--bg); color:var(--fg); }
+  .btn { width:100%; padding:12px; margin-top:12px; border:0; border-radius:10px; background:var(--accent);
+         color:#fff; font:inherit; font-weight:600; cursor:pointer; }
+  .hide { display:none; }
+  #result h2 { margin:0 0 6px; font-size:20px; }
+  .won h2 { color:var(--win); } .no_win h2 { color:var(--lose); } .expired h2, .not_drawn h2, .error h2 { color:var(--warn); }
+  dl { display:grid; grid-template-columns:auto 1fr; gap:4px 12px; margin:12px 0 0; font-size:14px; }
+  dt { color:var(--mute); } dd { margin:0; font-variant-numeric:tabular-nums; }
+  .hint { font-size:13px; color:var(--mute); margin-top:8px; }
+  #history li { font-size:14px; padding:4px 0; border-bottom:1px solid var(--line); list-style:none; }
+  #history { padding:0; margin:0; }
+</style>
+</head>
+<body>
+<main>
+  <h1>發票對獎 Receipt Checker</h1>
+  <p class="sub">Scan a Taiwan e-invoice or type a paper invoice, and it is checked against the Ministry of Finance winning numbers.</p>
+
+  <div class="card">
+    <div class="tabs">
+      <button data-tab="scan" class="on">Scan camera</button>
+      <button data-tab="photo">Photo</button>
+      <button data-tab="manual">Type in</button>
+    </div>
+
+    <section id="tab-scan">
+      <video id="video" playsinline muted></video>
+      <button class="btn" id="startCam">Start camera</button>
+      <p class="hint">Point at the <b>left</b> QR code on the e-invoice (電子發票證明聯). The barcode works too.</p>
+    </section>
+
+    <section id="tab-photo" class="hide">
+      <input type="file" id="photo" accept="image/*" capture="environment">
+      <p class="hint">Take or pick a photo of the receipt with both QR codes visible.</p>
+    </section>
+
+    <section id="tab-manual" class="hide">
+      <label for="num">Invoice number 發票號碼</label>
+      <input id="num" placeholder="AB-12345678" autocomplete="off">
+      <label for="date">Invoice date 日期</label>
+      <input id="date" type="date">
+      <button class="btn" id="checkManual">Check</button>
+    </section>
+  </div>
+
+  <div class="card hide" id="result"></div>
+
+  <div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center">
+      <b>Saved receipts <span id="total" style="color:var(--win)"></span></b>
+      <button id="clear" style="border:0;background:none;color:var(--mute);cursor:pointer;font:inherit">Clear</button>
+    </div>
+    <ul id="history"></ul>
+    <p class="hint">Saved on this device only. Receipts from a period not drawn yet are re-checked automatically after the draw.</p>
+  </div>
+</main>
+
+<script>
+const $ = s => document.querySelector(s);
+const canvas = document.createElement("canvas");
+const ctx = canvas.getContext("2d", { willReadFrequently: true });
+let stream = null, lastCode = "", scanning = false;
+
+document.querySelectorAll(".tabs button").forEach(b => b.onclick = () => {
+  document.querySelectorAll(".tabs button").forEach(x => x.classList.toggle("on", x === b));
+  ["scan", "photo", "manual"].forEach(t => $("#tab-" + t).classList.toggle("hide", t !== b.dataset.tab));
+  if (b.dataset.tab !== "scan") stopCam();
+});
+$("#date").valueAsDate = new Date();
+
+// A left QR starts with 2 letters + 8 digits + 7-digit ROC date; a barcode is 19 chars.
+const looksUseful = t => /^[A-Z]{2}\d{15}/.test(t) || /^\d{5}[A-Z]{2}\d{12}$/.test(t);
+
+const detector = "BarcodeDetector" in window
+  ? new BarcodeDetector({ formats: ["qr_code", "code_39", "code_128"] }) : null;
+
+async function decodeRegion(src, x, y, w, h) {
+  canvas.width = w; canvas.height = h;
+  ctx.drawImage(src, x, y, w, h, 0, 0, w, h);
+  if (detector) {
+    try {
+      const codes = await detector.detect(canvas);
+      const hit = codes.map(c => c.rawValue).find(looksUseful);
+      if (hit) return hit;
+    } catch (e) {}
+  }
+  const img = ctx.getImageData(0, 0, w, h);
+  const r = window.jsQR && jsQR(img.data, w, h, { inversionAttempts: "attemptBoth" });
+  return r && looksUseful(r.data) ? r.data : null;
+}
+
+// E-invoices have two QR codes side by side; jsQR finds only one per image,
+// so also try the left half and the left two-thirds.
+async function decodeImage(src, w, h) {
+  for (const [fx, fw] of [[0, 1], [0, 0.5], [0, 0.66], [0.1, 0.5]]) {
+    const code = await decodeRegion(src, Math.floor(w * fx), 0, Math.floor(w * fw), h);
+    if (code) return code;
+  }
+  return null;
+}
+
+$("#startCam").onclick = async () => {
+  if (stream) return stopCam();
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+  } catch (e) {
+    return show({ status: "error", message: "Camera unavailable (" + e.message + "). Use Photo or Type in." });
+  }
+  const v = $("#video"); v.srcObject = stream; v.style.display = "block"; await v.play();
+  $("#startCam").textContent = "Stop camera"; scanning = true; tick();
+};
+function stopCam() {
+  scanning = false;
+  if (stream) stream.getTracks().forEach(t => t.stop());
+  stream = null; $("#video").style.display = "none"; $("#startCam").textContent = "Start camera";
+}
+async function tick() {
+  if (!scanning) return;
+  const v = $("#video");
+  if (v.readyState >= 2) {
+    const code = await decodeImage(v, v.videoWidth, v.videoHeight);
+    if (code && code !== lastCode) { lastCode = code; navigator.vibrate?.(80); check({ code }); }
+  }
+  setTimeout(tick, 250);
+}
+
+$("#photo").onchange = async e => {
+  const file = e.target.files[0]; if (!file) return;
+  const img = new Image(); img.src = URL.createObjectURL(file); await img.decode();
+  const scale = Math.min(1, 1600 / Math.max(img.width, img.height));
+  const w = Math.round(img.width * scale), h = Math.round(img.height * scale);
+  const off = document.createElement("canvas"); off.width = w; off.height = h;
+  off.getContext("2d").drawImage(img, 0, 0, w, h);
+  const code = await decodeImage(off, w, h);
+  code ? check({ code }) : show({ status: "error", message: "No invoice QR code found. Try a closer, sharper photo, or Type in." });
+};
+
+$("#checkManual").onclick = () => check({ number: $("#num").value, date: $("#date").value });
+
+async function check(payload) {
+  show({ status: "loading", message: "Checking…" });
+  try {
+    const r = await fetch("/api/check", { method: "POST", headers: { "Content-Type": "application/json" },
+                                          body: JSON.stringify(payload) });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || r.statusText);
+    show(data); addHistory(data);
+  } catch (e) { show({ status: "error", message: e.message }); }
+}
+
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const titles = { won: "🎉 Winner", no_win: "Not a winner", expired: "Won, but expired",
+                 not_drawn: "Not drawn yet", error: "Couldn't check", loading: "Checking…" };
+
+function show(d) {
+  const el = $("#result"); el.className = "card " + d.status; el.classList.remove("hide");
+  let html = `<h2>${titles[d.status] || ""}</h2><div>${esc(d.message)}</div>`;
+  if (d.invoice) {
+    const i = d.invoice, items = (i.items || []).map(x => esc(x.name)).join("、");
+    html += `<dl>
+      <dt>Number</dt><dd>${esc(i.number.slice(0,2))}-${esc(i.digits ?? i.number.slice(2))}</dd>
+      <dt>Date</dt><dd>${esc(i.date)} · ${esc(d.term_label)}</dd>
+      ${i.total_amount != null ? `<dt>Total</dt><dd>NT$${esc(i.total_amount)}</dd>` : ""}
+      ${i.seller_id ? `<dt>Seller ID</dt><dd>${esc(i.seller_id)}</dd>` : ""}
+      ${items ? `<dt>Items</dt><dd>${items}</dd>` : ""}
+      ${d.winning_numbers ? `<dt>Source</dt><dd>${esc(d.winning_numbers.source)}</dd>` : ""}
+    </dl>`;
+  }
+  el.innerHTML = html;
+}
+// ---- Saved receipts (localStorage, this device only) ----
+const KEY = "receipts.v1";
+function load() { try { return JSON.parse(localStorage.getItem(KEY)) || []; } catch (e) { return []; } }
+function save(list) { try { localStorage.setItem(KEY, JSON.stringify(list)); } catch (e) {} }
+
+function addHistory(d) {
+  const i = d.invoice;
+  const entry = { number: i.number, date: i.date, term: i.term, term_label: d.term_label,
+                  total: i.total_amount, seller: i.seller_id, items: (i.items || []).map(x => x.name),
+                  status: d.status, prize: d.result?.prize || null, amount: d.result?.amount || 0,
+                  draw_date: d.schedule.draw_date, claim_end: d.schedule.claim_end,
+                  checked_at: new Date().toISOString() };
+  save([entry, ...load().filter(e => e.number !== entry.number)]);
+  renderHistory();
+}
+
+function renderHistory() {
+  const list = load(), ul = $("#history");
+  ul.innerHTML = "";
+  for (const e of list) {
+    const li = document.createElement("li");
+    li.textContent = `${e.number.slice(0,2)}-${e.number.slice(2)} · ${e.term_label} · ${titles[e.status] || e.status}` +
+                     (e.amount ? ` NT$${e.amount.toLocaleString()} (claim by ${e.claim_end})` : "") +
+                     (e.status === "not_drawn" ? ` (draw ${e.draw_date})` : "");
+    if (e.status === "won") li.style.color = "var(--win)";
+    ul.append(li);
+  }
+  const won = list.filter(e => e.status === "won").reduce((a, e) => a + e.amount, 0);
+  $("#total").textContent = won ? `· NT$${won.toLocaleString()} to claim` : "";
+}
+
+$("#clear").onclick = () => { if (load().length) { save([]); renderHistory(); } };
+
+// Re-check receipts whose draw has happened since they were saved.
+async function recheckPending() {
+  const today = new Date().toISOString().slice(0, 10);
+  for (const e of load().filter(e => e.status === "not_drawn" && e.draw_date <= today)) {
+    try {
+      const r = await fetch("/api/check", { method: "POST", headers: { "Content-Type": "application/json" },
+                                            body: JSON.stringify({ number: e.number, date: e.date }) });
+      if (r.ok) addHistory(await r.json());
+    } catch (err) {}
+  }
+}
+renderHistory(); recheckPending();
+</script>
+</body>
+</html>

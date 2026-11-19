@@ -1,0 +1,10 @@
+[
+  {
+    "term": "11508",
+    "special": "12345678",
+    "grand": "87654321",
+    "first": ["11122233", "44455566", "77788899"],
+    "additional_sixth": [],
+    "_note": "FAKE numbers for illustration. Copy to winning_numbers.json and replace with the real ones only if both online sources are unreachable."
+  }
+]

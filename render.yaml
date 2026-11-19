@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: receipt-checker
+    runtime: python
+    plan: free
+    buildCommand: "true"
+    startCommand: python3 server.py
+    healthCheckPath: /
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.7"
+      # Optional: add MOF_APP_ID in the Render dashboard (Environment tab).
