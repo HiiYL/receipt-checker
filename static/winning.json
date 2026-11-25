@@ -1,7 +1,19 @@
 {
-  "updated": "2026-11-19T09:02:04+00:00",
+  "updated": "2026-11-25T22:56:19+00:00",
   "source": "https://invoice.etax.nat.gov.tw/invoice.xml",
   "terms": [
+    {
+      "term": "11510",
+      "special": "97606522",
+      "grand": "76160702",
+      "first": [
+        "02096005",
+        "28745017",
+        "76740352"
+      ],
+      "additional_sixth": [],
+      "source": "MoF public RSS"
+    },
     {
       "term": "11508",
       "special": "89996565",
@@ -58,18 +70,6 @@
         "92377231",
         "05232592",
         "78125249"
-      ],
-      "additional_sixth": [],
-      "source": "MoF public RSS"
-    },
-    {
-      "term": "11410",
-      "special": "25834483",
-      "grand": "46587380",
-      "first": [
-        "41016094",
-        "98081574",
-        "07309261"
       ],
       "additional_sixth": [],
       "source": "MoF public RSS"
